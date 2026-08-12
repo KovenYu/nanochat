@@ -342,10 +342,13 @@ class GPT(nn.Module):
         """
         The number of parameters that participate in matmuls with the token stream,
         i.e. contribute 2 FLOPs/param to the forward pass. Counted structurally: every
-        matmul in this model goes through the Linear class, while non-matmul params
-        (embeddings = lookups, per-layer scalars) are nn.Embedding or raw Parameters.
+        matmul in this model is an nn.Linear, while non-matmul params (embeddings =
+        lookups, per-layer scalars) are nn.Embedding or raw Parameters.
+        Match on nn.Linear rather than our Linear subclass: --fp8 swaps most layers out
+        for Float8Linear, which is an nn.Linear but not a Linear, and matching the
+        subclass silently counted zero matmul params (and so ~12x understated MFU).
         """
-        matmul_params = sum(m.weight.numel() for m in self.modules() if isinstance(m, Linear))
+        matmul_params = sum(m.weight.numel() for m in self.modules() if isinstance(m, nn.Linear))
         return matmul_params
 
     def estimate_decode_flops(self, context_len):
