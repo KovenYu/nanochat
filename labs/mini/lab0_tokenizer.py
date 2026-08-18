@@ -121,7 +121,9 @@ class Tokenizer:
         return self.enc.decode(ids)
 
     def decode_single_token_bytes(self, token_id):          # nanochat/tokenizer.py:129
-        return self.enc.decode_single_token_bytes(token_id)  # bytes, len 1..~16 (0 not possible)
+        return self.enc.decode_single_token_bytes(token_id)  # bytes, len >= 1 (every merge concatenates two
+                                                            # non-empty tokens); no principled upper bound,
+                                                            # only "longest chunk that got fully merged"
 
     # ---- conversations -> ids (+ mask) -------------------------------------------------------
     def render_conversation(self, conversation, max_tokens=2048):       # nanochat/tokenizer.py:140
