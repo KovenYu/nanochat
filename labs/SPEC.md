@@ -5,6 +5,14 @@
 Exit criterion：随机指参照实现中一行训练相关代码，Koven 能说出该行处理的 tensor 的
 shape/dtype 与该行存在的理由。
 
+## 出题原则（scale-relevance filter）
+Koven 的目标：build mental model + 数值量级感知，服务于后续 post-train 工业级大模型。
+- Stage 2 预测与 Stage 3 挑战**不考** speedrun-specific 组件（smear、value embeddings、
+  backout、resid/x0 lambdas、relu² 等）的细节；考题聚焦 scale-invariant 的机制与量级。
+- 讲解 ad-hoc 组件后必须提醒：这是 ad-hoc 的，scale up 后被抛弃。
+- 判别基准：Qwen3/Gemma 级工业模型仍在用 = 存活；只存在于 modded-nanogpt/nanochat 谱系 = ad-hoc。
+- mini 的蒸馏**不受此过滤影响**（checkpoint 对齐要求全部组件在场）；过滤只作用于考什么。
+
 ## 蒸馏规则
 - 从参照实现（nanochat/ 与 scripts/，tag speedrun-4xh200-baseline）蒸馏，语义一致，禁止顺手优化。
 - 砍掉：tokenizer 训练（直接加载下方现成 tokenizer）、inference engine 与 web UI、
