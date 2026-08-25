@@ -8,24 +8,24 @@
 
 | # | 问题 | 你的预测 |
 |---|---|---|
-| A1 | `<\|bos\|>` 的 token id | |
-| A2 | `<\|assistant_start\|>` 的 token id | |
-| A3 | `<\|output_end\|>` 的 token id | |
-| A4 | `token_bytes[A3 的答案]` 的值 | |
+| A1 | `<\|bos\|>` 的 token id | 32768-9|
+| A2 | `<\|assistant_start\|>` 的 token id | 32768-8~32768 |
+| A3 | `<\|output_end\|>` 的 token id |32768-8~32768 |
+| A4 | `token_bytes[A3 的答案]` 的值 | 0|
 
 ## B. token 数（`len(tok.encode(s))`，精确值或区间）
 
 | # | 字符串 s | 你的预测 |
 |---|---|---|
-| B1 | `"hello world"` | |
-| B2 | `" hello world"`（注意开头空格） | |
-| B3 | `"Hello World!"` | |
-| B4 | `"1234567890"` | |
-| B5 | `"3.14159265358979"` | |
-| B6 | `"今天天气很好"` | |
-| B7 | `"👍"` | |
-| B8 | `""`（空串） | |
-| B9 | `"supercalifragilisticexpialidocious"` | |
+| B1 | `"hello world"` | 2~11|
+| B2 | `" hello world"`（注意开头空格） | 2~12|
+| B3 | `"Hello World!"` | 3~12|
+| B4 | `"1234567890"` | 5~10|
+| B5 | `"3.14159265358979"` | 8~16|
+| B6 | `"今天天气很好"` | 1~18|
+| B7 | `"👍"` | 1~4|
+| B8 | `""`（空串） | 1~2|
+| B9 | `"supercalifragilisticexpialidocious"` |? |
 
 ## C. render_conversation 的结构
 
@@ -48,13 +48,13 @@ CONV = {"messages": [
 
 | # | 问题 | 你的预测 |
 |---|---|---|
-| C1 | 渲染时实际参与循环的 message 数 | |
-| C2 | `ids` 里 special token 共出现几次 | |
-| C3 | 这些 special token 中 mask=1 的有几个、各是什么 | |
-| C4 | `ids[0]` 和 `ids[1]` 是哪两个 token | |
-| C5 | 第一个 mask=1 的位置上的 token 对应什么文本 | |
-| C6 | `ids[-1]` 是哪个 token，其 mask 是几 | |
-| C7 | `decode(ids)` 里 "Be brief." 和 "What is 2+2?" 之间隔着什么 | |
+| C1 | 渲染时实际参与循环的 message 数 |4 |
+| C2 | `ids` 里 special token 共出现几次 | 15|
+| C3 | 这些 special token 中 mask=1 的有几个、各是什么 | 3, python start, python end, assistant end|
+| C4 | `ids[0]` 和 `ids[1]` 是哪两个 token |bos, user start |
+| C5 | 第一个 mask=1 的位置上的 token 对应什么文本 | Sure|
+| C6 | `ids[-1]` 是哪个 token，其 mask 是几 | assistant end, 1|
+| C7 | `decode(ids)` 里 "Be brief." 和 "What is 2+2?" 之间隔着什么 |/n/n |
 
 ## D. render_for_completion
 
@@ -62,5 +62,5 @@ CONV = {"messages": [
 
 | # | 问题 | 你的预测 |
 |---|---|---|
-| D1 | `pids` 的最后两个 token 是哪两个 | |
-| D2 | `len(pids)` 与 `len(ids)` 谁大（不必给差值） | |
+| D1 | `pids` 的最后两个 token 是哪两个 | ., assistant end|
+| D2 | `len(pids)` 与 `len(ids)` 谁大（不必给差值） | len(ids)|
