@@ -55,6 +55,12 @@ trajectory 记录两层 loop 的全部尝试与反馈，含失败 attempt。
   loss 只落在成功修正的那个 turn（即 mask_history 语义）。训练目标：incorporate 反馈的能力。
 Lab 2 capstone 的 mask 验证 harness 即针对这两种形态的合成样本构建。
 
+
+**Lab 1 Stage 3 re-scope（2026-08-25，与 Koven 议定）**：原挑战①（MHA→GQA）与②（d24 载入对齐）
+取消——其学习内容已在 Stage 2 的 D 组与讨论中消费完毕；②的 Qwen3-0.6B 变体推迟到 Phase 1 前夕
+作为独立桥接练习；压缩版③'（带环形缓冲的 KV-cache decode）经评估后放弃。d24 载入管线作为
+Lab 2 milestone 的基础设施由 CC 直接实现，不作为挑战。
+
 ## Lab 定义
 
 | Lab | 主题 | Stage 2 预测重点 | Stage 3 挑战（你出题时据此设计 accept_test） |
