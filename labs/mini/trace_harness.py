@@ -232,6 +232,7 @@ def lab2():
     torch.manual_seed(0)
     cfg = GPTConfig(sequence_len=64, vocab_size=256, n_layer=2, n_head=4, n_kv_head=4, n_embd=64)
     def grads_of(fn):
+        torch.manual_seed(0)          # identical weights for every comparison arm
         m = GPT(cfg); m.init_weights(); m = m.to(dev)
         torch.manual_seed(1)
         fn(m)
