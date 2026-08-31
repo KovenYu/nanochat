@@ -29,13 +29,13 @@ CONV = {"messages": [
 
 ## B. packing 行为
 
-row_capacity = 33（即 T=32）。buffer 里恰好有长度为 [30, 12, 20, 8, 3] 的五条对话（按此顺序）。
+row_capacity = 33（即 T=32）。对话流依次给出长度 [30, 12, 20, 8, 3]，之后全部是长度 31。
 
 | # | 问题 | 你的预测 |
 |---|---|---|
-| B1 | 第一行装入的对话长度序列（按装入顺序） | |
-| B2 | 第一行有几个 padding token？`padded_at` 是多少？ | |
-| B3 | 该行 targets 里 -1 的个数下界（只算 padding 贡献的，不算 mask=0 内容的） | |
+| B1 | 第 1 行装入的对话长度序列（按装入顺序）、padding 数 | |
+| B2 | 第 2 行装入的长度序列、padding 数、`padded_at` | |
+| B3 | 第 2 行 targets 里由 padding 贡献的 -1 个数 | |
 | B4 ✏ | `for i, content_len in enumerate(row_lengths)` 那段显式 padding 屏蔽——它屏蔽的位置里，有没有哪个是 `mask[1:]` 那条路**没有**覆盖到的？（提示：padding token 的 mask 是什么） | |
 
 ## C. grad accumulation 等价性 ✏
