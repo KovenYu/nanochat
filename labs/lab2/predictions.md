@@ -21,11 +21,11 @@ CONV = {"messages": [
 
 | # | input 位置 p 上的 token | target[p] 被监督吗 | 你的预测 |
 |---|---|---|---|
-| A1 | `<\|user_end\|>`（第一轮） | ? | |
-| A2 | `<\|assistant_start\|>`（第一轮） | ? | |
-| A3 | "Hello" 的最后一个 token | ? | |
-| A4 | `<\|assistant_end\|>`（第一轮） | ? | |
-| A5 | 整行被监督的 target 总数 = ？（用 "Hello"=1 token、"Ok"=1 token、"Hi"/"Bye"=1 token 假设算精确值） | | |
+| A1 | `<\|user_end\|>`（第一轮） | assistant start | no |
+| A2 | `<\|assistant_start\|>`（第一轮） | Hello的第一个token |yes |
+| A3 | "Hello" 的最后一个 token | assistant end |yes |
+| A4 | `<\|assistant_end\|>`（第一轮） | user start |no |
+| A5 | 整行被监督的 target 总数 = ？（用 "Hello"=1 token、"Ok"=1 token、"Hi"/"Bye"=1 token 假设算精确值） | 4，就是hello, assistant end, ok, assistant end| |
 
 ## B. packing 行为
 
@@ -33,10 +33,10 @@ row_capacity = 33（即 T=32）。对话流依次给出长度 [30, 12, 20, 8, 3]
 
 | # | 问题 | 你的预测 |
 |---|---|---|
-| B1 | 第 1 行装入的对话长度序列（按装入顺序）、padding 数 | |
-| B2 | 第 2 行装入的长度序列、padding 数、`padded_at` | |
-| B3 | 第 2 行 targets 里由 padding 贡献的 -1 个数 | |
-| B4 ✏ | `for i, content_len in enumerate(row_lengths)` 那段显式 padding 屏蔽——它屏蔽的位置里，有没有哪个是 `mask[1:]` 那条路**没有**覆盖到的？（提示：padding token 的 mask 是什么） | |
+| B1 | 第 1 行装入的对话长度序列（按装入顺序）、padding 数 | 30，3|
+| B2 | 第 2 行装入的长度序列、padding 数、`padded_at` | 31，padding=2|
+| B3 | 第 2 行 targets 里由 padding 贡献的 -1 个数 | 2|
+| B4 ✏ | `for i, content_len in enumerate(row_lengths)` 那段显式 padding 屏蔽——它屏蔽的位置里，有没有哪个是 `mask[1:]` 那条路**没有**覆盖到的？（提示：padding token 的 mask 是什么） | 没看懂问题是什么|
 
 ## C. grad accumulation 等价性 ✏
 
@@ -45,9 +45,9 @@ row_capacity = 33（即 T=32）。对话流依次给出长度 [30, 12, 20, 8, 3]
 
 | # | 问题 | 你的预测 |
 |---|---|---|
-| C1 ✏ | `(loss/2).backward()` 累积出的梯度与大 batch 的梯度**严格相等**吗？不等的话，两条路各自等价于什么加权？ | |
-| C2 | 若把 loss_reduction 换成 'sum'、最后统一除以总有效 target 数，等价性恢复吗 | |
-| C3 | 两个 micro-batch 的先后顺序影响累积结果吗（数学上） | |
+| C1 ✏ | `(loss/2).backward()` 累积出的梯度与大 batch 的梯度**严格相等**吗？不等的话，两条路各自等价于什么加权？ | 不严格相等。第一个micro里各target对应的loss是 1/100的权重，loss/2后等价于1/200的权重；第二个micro则是1/600的权重。但是在大batch里，每个target都得到1/400的权重。换句话说，在前者的情况里，有效target少的micro batc里的几个conversation的重要性被放大了|
+| C2 | 若把 loss_reduction 换成 'sum'、最后统一除以总有效 target 数，等价性恢复吗 | 应该基本等价，如果不考虑数值精度上的微小损失|
+| C3 | 两个 micro-batch 的先后顺序影响累积结果吗（数学上） | 数学上不影响，实现上会受精度有微小影响|
 
 ## D. 显存账（±10% 闭合，物理题重头）
 
@@ -57,10 +57,18 @@ row_capacity = 33（即 T=32）。对话流依次给出长度 [30, 12, 20, 8, 3]
 
 提示：先列参数清单（wte/lm_head/ve/blocks/scalars 的数量与 dtype），再分四块记账。
 
+WTE=32768*64=2^21, dtype=bf16
+lm_head=2^21, dtype=fp32
+ve (skip becoz it is scale-dependent)
+blocks: qkv+proj: 2*64*64*4=2^15
+linear: 2*64*4*64*2=2^16
+dtype=fp32
+scalars also skip
+
 | # | 记账项 | 你的预测（MiB） |
 |---|---|---|
-| D1 | 参数本体（注意 bf16/fp32 混合） | |
-| D2 | 梯度 | |
-| D3 | optimizer state（AdamW m+v 的 dtype 跟随参数；Muon momentum + factored 二阶） | |
-| D4 ✏ | 峰值 activation 的**最大单项**是什么 tensor？多少 MiB？（想想 fused-CE 那次讨论） | |
-| D5 | `max_memory_allocated` 总峰值 | |
+| D1 | 参数本体（注意 bf16/fp32 混合） |wte-> 2^21*2byte=2^22B=4GB; lm_head->8GB; blocks: 1.5*2^16*4B=375MB. 总共12GB出头 |
+| D2 | 梯度 | 都是bf16，所以是差不多8GB出头|
+| D3 | optimizer state（AdamW m+v 的 dtype 跟随参数；Muon momentum + factored 二阶） | wte, lm_head 是adamw，所以是2*4GB+2*8GB，就是24GB左右；blocks都是muon，就还是375MB，加起来就是24GB出头|
+| D4 ✏ | 峰值 activation 的**最大单项**是什么 tensor？多少 MiB？（想想 fused-CE 那次讨论） | 是从bf16升到fp32之后的logits，是16*128*32768*4B=2^28B=256GB|
+| D5 | `max_memory_allocated` 总峰值 | 感觉300GB左右？这样H200不是爆炸了吗|
