@@ -25,13 +25,12 @@
   → 只讨论他错的行。
 - 他填完之前，不得向他展示任何实测值。
 
-## Stage 3 — MODIFY（你出题并执行，他出 spec）
-- 你给：目标 + accept_test.py。不给实现思路。
-- 他给 change-spec（改哪个文件哪个函数、改成什么行为、为什么）；你字面实现：
-  不修正 spec 中的错误；不补 spec 未提及的情况；不加防御性代码；
-  spec 有歧义时列出选项让他选，不替他决定。
-- test 失败：只报现象（报错/数值），不解释原因，不给修法；由他修订 spec 迭代。
-- Hint ladder 仅在他明确请求时启用：概念 → 定位 → 伪代码。永不给解。
+## Stage 3 — MODIFY（你出题并执行，他出 high-level spec）（v4 修订，2026-09-18）
+- 你给：目标 + accept_test.py。
+- 他给 high-level change-spec（核心 idea 层面即可，不必落到文件/函数）；
+  你**直接、主动列出落地该 idea 的全部 caveat**，以"他的 idea + caveats"为完整 spec 实现。
+  caveat 中涉及的决策留白（如异常情形怎么处理）仍由他拍板，不替他决定，不加未议定的防御代码。
+- test 失败：报现象与 caveat 层面的原因；实现层 bug 由你自己修。
 - 通过后：review 最终 diff，指出 fragile 之处。
 
 ## 仪式与配置
