@@ -85,7 +85,7 @@ def jsonl_conversations(path):
             for line in f:
                 yield json.loads(line)
 
-def sft_data_generator(conversations, tokenizer, B, T, device, buffer_size=100):
+def sft_data_generator(conversations, tokenizer, B, T, device, buffer_size=100, mask_history=False):
     """scripts/chat_sft.py:180-298, single rank. Yields (inputs, targets), both (B, T).
 
     Packing invariants (the heart of Lab 2):
@@ -100,10 +100,19 @@ def sft_data_generator(conversations, tokenizer, B, T, device, buffer_size=100):
     bos = tokenizer.get_bos_token_id()
     conv_buffer = []                                        # list of (ids, mask), each len <= row_capacity
 
+    if mask_history:
+        assistant_start = tokenizer.encode_special("<|assistant_start|>")
+
     def refill():
         while len(conv_buffer) < buffer_size:
             ids, mask = tokenizer.render_conversation(next(conversations))   # lists, same length
             assert len(ids) <= row_capacity, f"conversation ({len(ids)}) cannot fit a row ({row_capacity})"
+            if mask_history:
+                # View B: supervise only the LAST assistant turn. Per conversation, BEFORE
+                # packing; judged on the token sequence (truncation-safe); narrowing only,
+                # so python_output zeros inside the last turn are never resurrected.
+                last_as = max((i for i, t in enumerate(ids) if t == assistant_start), default=None)
+                mask = [m if last_as is not None and i > last_as else 0 for i, m in enumerate(mask)]
             conv_buffer.append((ids, mask))
 
     while True:
