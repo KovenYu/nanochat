@@ -43,12 +43,17 @@ def load_policy_and_ref(device):
     sd = torch.load(os.path.join(SFT50_DIR, f"model_{SFT50_STEP:06d}.pt"),
                     map_location=device, weights_only=True)
     sd = {k.removeprefix("_orig_mod."): v for k, v in sd.items()}
-    def build():
+    def build(state):
         m = GPT(GPTConfig(**meta["model_config"]))
-        m.load_state_dict(sd, strict=True, assign=True)
+        m.load_state_dict(state, strict=True, assign=True)   # assign ADOPTS the tensors
         return m.to(device)
-    policy = build()
-    ref = build()                                   # same weights, separate storage
+    policy = build(sd)
+    ref = build({k: v.clone() for k, v in sd.items()})  # ref gets its OWN storage: assign
+                                                        # with a shared sd would alias the
+                                                        # two models (optimizer steps would
+                                                        # silently update the "frozen" ref)
+    for pp, rp in zip(policy.parameters(), ref.parameters()):
+        assert pp.data_ptr() != rp.data_ptr(), "policy/ref alias the same storage"
     ref.eval()
     for p in ref.parameters():
         p.requires_grad_(False)                     # frozen anchor; forward under no_grad
