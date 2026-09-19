@@ -286,6 +286,58 @@ def lab2():
     print(f"D5 max_memory_allocated: {torch.cuda.max_memory_allocated()/2**20:.1f} MiB")
 
 
+def lab3():
+    import math
+    import torch
+    from lab0_tokenizer import get_tokenizer
+    from lab3_dpo import load_policy_and_ref, batch_pairs, sequence_logprob
+
+    assert torch.cuda.is_available(), "lab3 harness needs the GPU (loads d24 twice)"
+    tok = get_tokenizer()
+    torch.cuda.empty_cache(); torch.cuda.reset_peak_memory_stats()
+
+    print("== A/C. graph + memory ==")
+    m0 = torch.cuda.memory_allocated()
+    policy, ref = load_policy_and_ref("cuda")
+    m1 = torch.cuda.memory_allocated()
+    print(f"C3 policy+ref resident: {m1/2**30:.2f} GiB total; per-model ~{m1/2/2**30:.2f} GiB")
+    print(f"A2 requires_grad: policy {next(policy.parameters()).requires_grad}, ref {next(ref.parameters()).requires_grad}")
+
+    prompts = [
+        ({"messages": [{"role": "user", "content": "What is 2+2?"}]}, "4.", "Seven, probably."),
+        ({"messages": [{"role": "user", "content": "Name a primary color."}]}, "Red.", "Colorless green ideas."),
+        ({"messages": [{"role": "user", "content": "Say hello."}]}, "Hello!", "goodbye hello yes no"),
+        ({"messages": [{"role": "user", "content": "Is fire hot?"}]}, "Yes, fire is hot.", "Fire is a type of fish."),
+    ]
+    inputs, targets = batch_pairs(tok, prompts, "cuda")
+    B = len(prompts)
+    n_tok = (targets >= 0).sum(dim=-1)                       # response tokens per row
+    pi = sequence_logprob(policy, inputs, targets)
+    with torch.no_grad():
+        rf = sequence_logprob(ref, inputs, targets)
+    print(f"C1 logp shape/dtype: {tuple(pi.shape)} {pi.dtype} (inputs {tuple(inputs.shape)})")
+    print(f"A2 graph: pi.requires_grad={pi.requires_grad}, ref.requires_grad={rf.requires_grad}")
+    print("== B. magnitudes at step 0 ==")
+    beta = 0.1
+    r = beta * (pi - rf)                                     # implicit rewards, (2B,)
+    margin = r[:B] - r[B:]
+    loss0 = -torch.nn.functional.logsigmoid(margin).mean()
+    print(f"B1 max|r| = {r.abs().max():.2e} (policy==ref); loss at init = {loss0.item():.6f} (ln2 = {math.log(2):.6f})")
+    per_tok = (pi / n_tok).tolist()
+    for i, (conv, c, rj) in enumerate(prompts):
+        print(f"C2 pair{i}: chosen {per_tok[i]:+.2f} nats/tok ({int(n_tok[i])} tok) | rejected {per_tok[B+i]:+.2f} nats/tok ({int(n_tok[B+i])} tok)")
+    print("B3 seq logp (chosen rows):", [f"{v:.1f}" for v in pi[:B].tolist()])
+    # A3 demo: gather along the wrong dim -- shape check
+    import torch.nn.functional as F
+    logits = policy(inputs[:1])
+    logp = F.log_softmax(logits, dim=-1)
+    try:
+        bad = logp.gather(1, targets[:1].clamp_min(0).unsqueeze(-1))
+        print(f"A3 gather(1,...): NO ERROR, silent wrong result, shape {tuple(bad.shape)} (indexes TIME dim with token ids!)")
+    except Exception as e:
+        print(f"A3 gather(1,...): raises {type(e).__name__}: {str(e)[:80]}")
+
+
 if __name__ == "__main__":
-    assert len(sys.argv) == 2 and sys.argv[1] in ("lab0", "lab1", "lab2"), "usage: trace_harness.py lab0|lab1|lab2"
-    {"lab0": lab0, "lab1": lab1, "lab2": lab2}[sys.argv[1]]()
+    assert len(sys.argv) == 2 and sys.argv[1] in ("lab0", "lab1", "lab2", "lab3"), "usage: trace_harness.py lab0|lab1|lab2|lab3"
+    {"lab0": lab0, "lab1": lab1, "lab2": lab2, "lab3": lab3}[sys.argv[1]]()
