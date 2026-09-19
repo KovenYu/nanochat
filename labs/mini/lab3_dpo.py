@@ -76,7 +76,13 @@ def batch_pairs(tok, pairs, device):
         rendered.append(render_pair(tok, conv, chosen))
     for conv, chosen, rejected in pairs:
         rendered.append(render_pair(tok, conv, rejected))
-    L = max(len(ids) for ids, _ in rendered)        # pad to the longest row (T+1 raw)
+    # Pad to this batch's longest rendering. Unlike lab2's SFT, T is NOT a fixed
+    # constant here: T = L-1 varies per batch (fine without torch.compile; rotary
+    # cache covers 10x sequence_len). No packing: DPO measures per-sequence logps
+    # and nanochat-style packing has no block-diagonal mask, so row-mates would
+    # contaminate the measured margins (training tolerates that noise; measurement
+    # doesn't). The principled packed form is flash-attn varlen (cu_seqlens).
+    L = max(len(ids) for ids, _ in rendered)
     bos = tok.get_bos_token_id()
     rows, masks = [], []
     for ids, mask in rendered:
