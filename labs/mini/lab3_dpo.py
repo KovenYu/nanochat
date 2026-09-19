@@ -118,9 +118,14 @@ def sequence_logprob(model, inputs, targets):
 # -----------------------------------------------------------------------------
 
 def dpo_loss(pi_chosen, pi_rejected, ref_chosen, ref_rejected, beta):
-    """All args (B,) fp32 sequence logps. Returns scalar loss (+ any stats you want).
-    THE HOLE: filled from Koven's Stage 3 spec."""
-    raise NotImplementedError("challenge (1): awaiting Koven's spec")
+    """Koven's spec (2026-09-19): margin = beta * [(pi_c - ref_c) - (pi_r - ref_r)],
+    Bradley-Terry NLL on it. Caveats applied: -logsigmoid (not sigma, and the stable
+    fused form, never log(sigmoid)); beta inside the sigmoid; batch mean."""
+    margin = beta * ((pi_chosen - ref_chosen) - (pi_rejected - ref_rejected))   # (B,)
+    loss = -F.logsigmoid(margin).mean()                                         # scalar fp32
+    stats = {"margin": margin.mean().item(),
+             "accuracy": (margin > 0).float().mean().item()}   # fraction correctly ordered
+    return loss, stats
 
 def dpo_step(policy, ref, tok, pairs, beta, device):
     """One DPO training step, minus optimizer.step() (the caller owns the loop)."""
@@ -129,7 +134,7 @@ def dpo_step(policy, ref, tok, pairs, beta, device):
     pi_logp = sequence_logprob(policy, inputs, targets)   # (2B,) WITH grad
     with torch.no_grad():
         ref_logp = sequence_logprob(ref, inputs, targets) # (2B,) anchor, no graph
-    loss = dpo_loss(pi_logp[:B], pi_logp[B:], ref_logp[:B], ref_logp[B:], beta)
+    loss, stats = dpo_loss(pi_logp[:B], pi_logp[B:], ref_logp[:B], ref_logp[B:], beta)
     return loss
 
 if __name__ == "__main__":
@@ -149,9 +154,9 @@ if __name__ == "__main__":
     assert lp.shape == (2,) and lp.dtype == torch.float32 and (lp < 0).all()
     lr = sequence_logprob(ref, inputs, targets)
     assert torch.allclose(lp, lr)   # identical weights => identical logps
-    try:
-        dpo_step(policy, ref, tok, pairs, beta=0.1, device="cpu")
-        raise AssertionError("hole unexpectedly filled")
-    except NotImplementedError:
-        pass
-    print("lab3 mini: ok (dpo_loss hole awaiting challenge 1)")
+    loss = dpo_step(policy, ref, tok, pairs, beta=0.1, device="cpu")
+    import math
+    assert abs(loss.item() - math.log(2)) < 1e-5, "policy==ref must give ln2"
+    loss.backward()
+    assert policy.lm_head.weight.grad is not None
+    print("lab3 mini: ok (dpo_loss live, init loss = ln2)")
