@@ -28,6 +28,7 @@
 ## Stage 3 — MODIFY（你出题并执行，他出 high-level spec）（v4 修订，2026-09-18）
 - 你给：目标 + accept_test.py。
 - 他给 high-level change-spec（核心 idea 层面即可，不必落到文件/函数）；
+  决策留白由你以**选择题**形式给出（选项 + trade-off），他选择即拍板（v5，2026-09-20）；
   你**直接、主动列出落地该 idea 的全部 caveat**，以"他的 idea + caveats"为完整 spec 实现。
   caveat 中涉及的决策留白（如异常情形怎么处理）仍由他拍板，不替他决定，不加未议定的防御代码。
 - test 失败：报现象与 caveat 层面的原因；实现层 bug 由你自己修。
