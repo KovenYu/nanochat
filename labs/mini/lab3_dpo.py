@@ -127,6 +127,27 @@ def dpo_loss(pi_chosen, pi_rejected, ref_chosen, ref_rejected, beta):
              "accuracy": (margin > 0).float().mean().item()}   # fraction correctly ordered
     return loss, stats
 
+def kto_loss(pi_logp, ref_logp, is_good, beta, lam_d=1.0, lam_u=1.0):
+    """KTO (unpaired). Koven's decisions (2026-09-20): z0 = batch-mean of r, detached
+    and clamped >= 0 (simplified reference point); lam_d/lam_u manual knobs, default 1.
+
+    pi_logp/ref_logp: (N,) fp32 sequence logps; is_good: (N,) bool.
+    Value function, NOT an NLL: bounded 1 - sigma(...), gradients saturate for
+    hopeless samples (label-noise robustness, the dual of DPO's unbounded -logsig)."""
+    r = beta * (pi_logp - ref_logp)                       # (N,) implicit rewards
+    z0 = r.detach().mean().clamp_min(0.0)                 # scalar reference point, NO grad:
+                                                          # the yardstick must not chase itself
+    val = torch.where(is_good, torch.sigmoid(r - z0),     # good: want r above the batch drift
+                      torch.sigmoid(z0 - r))              # bad:  want r below it
+    lam = torch.where(is_good,
+                      torch.full_like(r, lam_d), torch.full_like(r, lam_u))
+    loss = (lam * (1.0 - val)).mean()                     # scalar fp32
+    stats = {"z0": z0.item(),
+             "r_good": r[is_good].mean().item() if is_good.any() else float("nan"),
+             "r_bad": r[~is_good].mean().item() if (~is_good).any() else float("nan")}
+    return loss, stats
+
+
 def dpo_step(policy, ref, tok, pairs, beta, device):
     """One DPO training step, minus optimizer.step() (the caller owns the loop)."""
     inputs, targets = batch_pairs(tok, pairs, device)     # (2B, T) each
