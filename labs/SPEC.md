@@ -1,7 +1,8 @@
 # labs/SPEC.md — 蒸馏规则与 lab 定义
 
 ## 目标
-通过 4 个活跃 lab 建立 post-training（SFT + offline preference optimization）的 mental model。
+通过 5 个活跃 lab 建立 post-training（SFT + offline preference optimization + online RLVR）
+的 mental model。（2026-09-22：Koven 决定 SFT 之后直接进 RLVR，Lab 5 解禁。）
 Exit criterion：随机指参照实现中一行训练相关代码，Koven 能说出该行处理的 tensor 的
 shape/dtype 与该行存在的理由。
 
@@ -69,7 +70,7 @@ Lab 2 milestone 的基础设施由 CC 直接实现，不作为挑战。
 | 1 | 模型 forward + checkpoint 解剖 | 各 module 进出 shape/dtype；RoPE 不改 q/k 范数；attention logits 量级；checkpoint 文件里有哪些 tensor、各多大 | ① MHA→GQA(n_kv=2)，tiny 短跑曲线重合 + KV 显存按预测缩小；② 把 d24-baseline 冻结 checkpoint 载入 mini，与参照实现 logits 对齐到阈值；③ 手写 KV-cache greedy decode，与无 cache 逐 token 一致。选做：载入 Qwen3-0.6B 并对齐 logits（通往 Phase 1 的桥） |
 | 2 | SFT = 训练 loop + masking（核心 lab） | 渲染多轮对话后哪些位置 label=-100；packing 后 position/mask 的变化；param/grad/optimizer state 的 dtype 与字节数；tiny 模型显存预算 vs memory_allocated 误差 ≤10%；grad accumulation 的等价性 | ① 实现 mask_history 语义（只训最后一轮），accept_test 证明非零 loss 恰好落在最后一轮 assistant tokens；② View A/B 数据（Coda trajectory 的两种导出形态）的 mask 验证 harness。milestone 仪式：用 mini 对 d24-baseline base checkpoint 跑一遍 SFT（shadow config，分钟级），chat_cli 训前训后各聊一次，肉眼见证 base→chat 的转变 |
 | 3 | DPO / KTO（offline RL 本体） | frozen reference 双前向的计算图；per-token logp 的 gather 维度；β 增减对 implicit reward margin 的影响方向 | ① 由你设计合成 preference 数据，Koven spec 出 DPO loss 的实现要点，β 扫描曲线符合预测；② DPO→KTO 改造（去配对，逐样本 good/bad 标签），合成数据上 good↑ bad↓；capstone：从一条模拟 Coda schema 的合成 trajectory 构造 chosen/rejected 对与 KTO 标签。policy 初始化用 lab 2 产出的 SFT checkpoint（这是 post-training pipeline 自身的拓扑 base → SFT → preference：DPO/KTO 的 policy 初始化与 frozen reference 常规上就是 SFT 模型，亲身走一遍拓扑本身是课程内容，故 Lab 2 是硬前置。fallback：若 Lab 2 的 milestone 产物因故不可用，退用冻结的 speedrun chatsft 副本 `chatsft_checkpoints/d24-baseline-26413dc/`（同为 d24 SFT 模型）作初始化，默认仍走硬顺序） |
+| 5 | GRPO（online RLVR；参照 scripts/chat_rl.py，2026-09-22 解禁） | rollout batch 的 shape（num_samples × (prompt+gen)）与 mask 为 0 的位置（prompt + tool tokens）；advantage = r − mean 在全对/全错 group 上退化为 0（该 example 零梯度）；token-level 归一化下长短 sample 对 loss 的权重差；generation 与 training 阶段的显存构成 | ① 把 lab3 的 frozen reference 接回来：加 KL-to-reference 项，accept test 证明 drift 随 KL 系数受控而 reward 不塌；② Coda verifier 作 verifiable reward：对 lab2 的合成 trajectory schema 写 reward 函数（verdict → 标量），合成任务上 reward↑；capstone：同一 prompt 采多样本、group advantage、一次 optimizer step 的完整 GRPO 步（无 engine，mini 自带最简 sampler）。Stage 1 = lab3 收尾的 lab3_dpo.py vs chat_rl.py 对照阅读（两仪式合一）。policy 初始化沿用 lab3 的 sft50。蒸馏 caveat：参照的 Engine 被蒸馏规则砍掉，mini 需自带一个最简 generate（无 KV cache 或 lab1 ③ 的 greedy 版扩成 sampling），语义对齐 engine.generate_batch 的 mask 约定。Stage 3 挑战为 CC 初稿，Lab 5 开始前与 Koven 确认 |
 
 ## Parked（不删除，等触发）
-- Lab 5 GRPO：解禁条件 = 决定进入 online RLVR。
 - Lab 6 ZeRO/并行：解禁条件 = 大模型（235B 级）run 前一周。
