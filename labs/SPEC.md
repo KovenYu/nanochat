@@ -40,7 +40,10 @@ Koven 的目标：build mental model + 数值量级感知，服务于后续 post
 
 ## 外部概念定义（使 labs 自含全部所需背景）
 
-**Phase 1（labs 之后的下一阶段）**：用成熟框架（LLaMA-Factory）对 Qwen3-8B 级模型做 SFT。
+**Phase 1（labs 之后的下一阶段）**：对 Qwen3-8B 级模型做 SFT。框架决定（2026-09-22）：
+TRL `SFTTrainer` + 自己 tokenize（数据集直接给 `input_ids` + `completion_mask`，render 逻辑由
+Koven 拍板、CC 实现，延续 labs 的 render/mask 纪律）；LLaMA-Factory 的 Phase A 环境保留为已验证的
+loop 参照与 fallback，不作为主线。理由：data 管线是现阶段的学习主体，必须在自己手里。
 Lab 1 选做项载入 Qwen3-0.6B（HF: Qwen/Qwen3-0.6B）的意义：用 mini 提前验证对 Qwen3
 架构系的理解——它是 Phase 1 要训的那族模型的最小成员，故称"桥"。
 
