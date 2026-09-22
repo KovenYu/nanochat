@@ -2,8 +2,9 @@
 
   T1 DPO: exactly 2 pairs; the shared pair's rendered prompt prefixes are
      token-identical up to the fork; the cross-outer pair's are not (flagged)
-  T2 KTO labels: verifier {v1:G, v2:B, v2b:G}; user {v1:B, v2:None, v2b:G};
-     the v1 cross-channel conflict EXISTS (dual-channel design working)
+  T2 KTO labels: verifier {v1:G, v2:B, v2b:G}; user {v1:None, v2:None, v2b:G};
+     the user channel carries ONLY the terminal verdict (decision A(b)), so the
+     verifier channel has 3 samples per view and the user channel exactly 1
   T3 views: every attempt appears in both A and B contexts; B contexts contain
      the feedback string, A contexts do not
   T4 e2e: dpo_loss on the pairs = ln2 at init; kto_loss (user channel, view B)
@@ -44,8 +45,9 @@ def main():
                    TRAJ["outer"][1]["attempts"][0]["code"],
                    TRAJ["outer"][1]["attempts"][1]["code"])
     ck("T2 verifier", (lab(v1, "verifier"), lab(v2, "verifier"), lab(v2b, "verifier")) == (True, False, True))
-    ck("T2 user", (lab(v1, "user"), lab(v2, "user"), lab(v2b, "user")) == (False, None, True))
-    ck("T2 conflict", lab(v1, "verifier") != lab(v1, "user"), "v1 should conflict across channels")
+    ck("T2 user", (lab(v1, "user"), lab(v2, "user"), lab(v2b, "user")) == (None, None, True))
+    n_user = sum(s["user"] is not None for s in samples if s["view"] == "B")
+    ck("T2 user is terminal-only", n_user == 1, f"{n_user} user-labelled samples in view B")
 
     fb = TRAJ["outer"][0]["user_feedback"]
     for s in samples:

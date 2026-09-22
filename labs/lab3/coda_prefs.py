@@ -4,7 +4,9 @@ Koven's decisions (2026-09-21):
   DPO   = shared-context fork pairs (v2 vs v2b at the turn fork) + cross-outer pairs
           (v1-in-its-context vs v2b-in-its-context; Bradley-Terry semantics bent, flagged)
   KTO   = dual channel: 'verifier' (inner-loop verdicts) and 'user' (outer-loop reactions),
-          emitted separately; v1 is good@verifier but bad@user BY DESIGN
+          emitted separately. User labels exist ONLY on the terminal outer turn
+          (2026-09-22, decision A(b)): a non-terminal reaction is a revision request,
+          not a verdict, so v1 gets user=None rather than bad.
   views = both: View B contexts (true prior messages, fork granularity) and View A
           (re-based on the bare intent)
 """
@@ -49,10 +51,11 @@ def kto_samples(traj):
         for j, att in enumerate(outer["attempts"]):
             passed = "PASS" in att["verdict"] and "FAIL" not in att["verdict"]
             shown = j == len(outer["attempts"]) - 1     # only the final attempt reaches the user
-            if shown:
-                user_lab = accepted if k == len(traj["outer"]) - 1 else False
+            terminal = k == len(traj["outer"]) - 1
+            if shown and terminal:
+                user_lab = accepted
             else:
-                user_lab = None                          # user never saw it
+                user_lab = None                          # never shown, or shown but only revised
             for view, conv in (("B", _ctx_before_outer(traj, k)), ("A", _intent_conv(traj))):
                 samples.append({"conv": conv, "response": att["code"], "view": view,
                                 "verifier": passed, "user": user_lab})
