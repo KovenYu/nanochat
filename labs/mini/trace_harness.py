@@ -338,6 +338,116 @@ def lab3():
         print(f"A3 gather(1,...): raises {type(e).__name__}: {str(e)[:80]}")
 
 
+def bridge():
+    """Qwen3-0.6B bridge (labs/bridge/predictions.md). Needs the Phase A env (safetensors,
+    tokenizers, transformers, llamafactory)."""
+    import json, os, math
+    import torch
+    from bridge_qwen3 import (SNAPSHOT, Qwen3Config, load_qwen3, get_tokenizer, encode, render_chat,
+                              rope_cos_sin, rotate_half, RMSNorm, COMPUTE_DTYPE)
+    from safetensors import safe_open
+    cfg = Qwen3Config.from_json(os.path.join(SNAPSHOT, "config.json"))
+    C, D, Hq, Hkv, L, I, V = (cfg.hidden_size, cfg.head_dim, cfg.num_attention_heads,
+                              cfg.num_key_value_heads, cfg.num_hidden_layers, cfg.intermediate_size, cfg.vocab_size)
+
+    print("== A. tensors in model.safetensors ==")
+    path = os.path.join(SNAPSHOT, "model.safetensors")
+    with safe_open(path, "pt") as f:
+        keys = list(f.keys())
+        info = {k: (tuple(f.get_slice(k).get_shape()), f.get_slice(k).get_dtype()) for k in keys}
+    l0 = {k: v for k, v in info.items() if k.startswith("model.layers.0.")}
+    for k in ("self_attn.q_proj", "self_attn.k_proj", "self_attn.o_proj", "self_attn.q_norm",
+              "mlp.gate_proj", "mlp.up_proj", "mlp.down_proj"):
+        print(f"A1-A5 {k}.weight:", info[f"model.layers.0.{k}.weight"])
+    print("A6 tensors per layer:", len(l0), "| total in file:", len(keys))
+    from safetensors.torch import load_file
+    sd = load_file(path)
+    print("A7 lm_head.weight in file:", "lm_head.weight" in info,
+          "| equals embed:", torch.equal(sd["lm_head.weight"], sd["model.embed_tokens.weight"]))
+    del sd
+    n_file = sum(math.prod(sh) for sh, _ in info.values())
+    n_unique = n_file - math.prod(info["lm_head.weight"][0])
+    print(f"A8 params in file {n_file/1e6:.1f}M | unique (tied) {n_unique/1e6:.1f}M | non-embedding {(n_unique - V*C)/1e6:.1f}M")
+    print(f"A9 file size {os.path.getsize(path)/1e9:.3f} GB")
+    print("A10 norm dtype:", info["model.norm.weight"][1], "| q_norm:", info["model.layers.0.self_attn.q_norm.weight"][1])
+
+    print("== B. mechanisms ==")
+    print("B1 RMSNorm learnable scale: yes (weight (dim,)); stats in fp32 (mq3:61-63), scale applied in bf16 (mq3:64)")
+    torch.manual_seed(0)
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    x = torch.randn(1, Hq, 8, D, device=dev)
+    cos, sin = rope_cos_sin(cfg, 8, dev, torch.float32)
+    rope = lambda t: t * cos.unsqueeze(1) + rotate_half(t) * sin.unsqueeze(1)
+    n_plain = RMSNorm(D, cfg.rms_norm_eps).to(dev)
+    n_w = RMSNorm(D, cfg.rms_norm_eps).to(dev); n_w.weight.data.uniform_(0.5, 1.5)
+    for name, n in (("no weight", n_plain), ("learned weight", n_w)):
+        a = rope(n(x)); b = n(rope(x))
+        print(f"B2 norm-then-rope vs rope-then-norm ({name}): max|d| = {(a-b).abs().max():.2e}")
+    model, _ = load_qwen3(dev)
+    tok = get_tokenizer()
+    ids = torch.tensor([encode(tok, "The capital of France is")], device=dev)
+    with torch.no_grad():
+        top_hf = model(ids)[0, -1].argmax().item()
+        import bridge_qwen3 as bq
+        orig = bq.rotate_half
+        bq.rotate_half = lambda t: -orig(t)           # flips the rotation direction (nanochat's)
+        top_flip = model(ids)[0, -1].argmax().item()
+        bq.rotate_half = orig
+    print("B3 same rotation? no (opposite direction). top-1 with HF convention:", repr(tok.decode([top_hf])),
+          "| with flipped convention:", repr(tok.decode([top_flip])))
+    for th in (1e5, 1e6):
+        lam = 2 * math.pi * th ** ((D - 2) / D)
+        print(f"B4 theta={th:.0e}: lowest-freq wavelength = {lam:,.0f} positions (max_pos {cfg.max_position_embeddings})")
+    print(f"B5 MLP params/layer: Qwen3 3*C*I = {3*C*I/1e6:.2f}M vs nanochat 2*C*4C = {8*C*C/1e6:.2f}M -> ratio {3*I/(8*C):.3f}")
+    with torch.no_grad():
+        t = torch.tensor([encode(tok, "The quick brown fox jumps over the lazy dog because it wanted to.")], device=dev)
+        xe = model.model.embed_tokens(t)
+        att = model.model.layers[0].self_attn
+        xn = model.model.layers[0].input_layernorm(xe)
+        B_, T_, _ = xn.shape
+        q = att.q_norm(att.q_proj(xn).view(B_, T_, Hq, D)).transpose(1, 2)
+        k = att.k_norm(att.k_proj(xn).view(B_, T_, Hkv, D)).transpose(1, 2)
+        c, s_ = rope_cos_sin(cfg, T_, dev, xn.dtype)
+        q, k = bq.apply_rotary_pos_emb(q, k, c, s_)
+        k = k.repeat_interleave(Hq // Hkv, dim=1)
+        lg = (q.float() @ k.float().transpose(-1, -2)) * att.scaling
+        print(f"B6 scale = 1/sqrt({D}) = {att.scaling:.4f}; no 1.2x. layer-0 attn logits: max|.| {lg.abs().max():.2f}, std {lg.std():.2f}"
+              f" | q_norm.weight range [{att.q_norm.weight.min():.2f}, {att.q_norm.weight.max():.2f}] (no hard bound)")
+    print("B7 embedding norm: no (mq3:427 feeds embeds straight to layer 0); softcap: no (mq3:493 raw lm_head)")
+    print("B8 ignore_index = -100 (HF ForCausalLMLoss)")
+    print("B9 fp32: RMSNorm stats (mq3:61), RoPE tables (mq3:141 autocast disabled), SDPA softmax (kernel-internal),"
+          " loss (upcast in loss_function). NOT fp32: logits (bf16, mq3:493), matmuls, residual stream")
+
+    print("== C. chat template ==")
+    from transformers import AutoTokenizer
+    hf_tok = AutoTokenizer.from_pretrained(SNAPSHOT)
+    M = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"},
+         {"role": "user", "content": "again?"}, {"role": "assistant", "content": "yes"}]
+    print("C1 HF apply_chat_template(M):", repr(hf_tok.apply_chat_template(M, tokenize=False)))
+    print("C2 BOS:", hf_tok.bos_token, "| eos:", hf_tok.eos_token, hf_tok.eos_token_id, "| pad:", hf_tok.pad_token, hf_tok.pad_token_id)
+    from llamafactory.data.template import TEMPLATES
+    tpl = TEMPLATES["qwen3"]
+    for flag in (True, False):
+        tpl.enable_thinking = flag
+        pairs = tpl.encode_multiturn(hf_tok, M)
+        lf_ids = [t for p, r in pairs for t in p + r]
+        lf_mask = [m for p, r in pairs for m in [0] * len(p) + [1] * len(r)]
+        tag = "C3/C4" if flag else "C5"
+        print(f"{tag} LF enable_thinking={flag}: {repr(hf_tok.decode(lf_ids))}")
+        print(f"{tag}   per-token (loss marked *):", " ".join(f"{repr(hf_tok.decode([t]))}{'*' if m else ''}" for t, m in zip(lf_ids, lf_mask)))
+        print(f"C6   total {len(lf_ids)} tokens, {sum(lf_mask)} with loss" if flag else "")
+    hf_ids = hf_tok.apply_chat_template(M, tokenize=True)
+    hf_ids = hf_ids["input_ids"] if hasattr(hf_ids, "input_ids") else hf_ids
+    print("C3 HF multi-turn token count:", len(list(hf_ids)), "(compare LF above)")
+
+    print("== D. magnitudes ==")
+    print(f"D1 bf16 weights (tied): {n_unique*2/1e9:.2f} GB")
+    kv = L * 2 * Hkv * D * 2
+    print(f"D2 KV cache per token: {L}*2*{Hkv}*{D}*2B = {kv:,} B = {kv/1024:.0f} KB")
+    print(f"D3 full-param SFT 2+4+8+2 = 16 B/param: 0.6B -> {n_unique*16/1e9:.1f} GB; 8.2B -> {8.2e9*16/1e9:.0f} GB")
+    print("D4 8B full-param on 4xH200 (564 GB): yes with the states sharded (ZeRO-2/3); LoRA trivially")
+
+
 if __name__ == "__main__":
-    assert len(sys.argv) == 2 and sys.argv[1] in ("lab0", "lab1", "lab2", "lab3"), "usage: trace_harness.py lab0|lab1|lab2|lab3"
-    {"lab0": lab0, "lab1": lab1, "lab2": lab2, "lab3": lab3}[sys.argv[1]]()
+    assert len(sys.argv) == 2 and sys.argv[1] in ("lab0", "lab1", "lab2", "lab3", "bridge"), "usage: trace_harness.py lab0|lab1|lab2|lab3|bridge"
+    {"lab0": lab0, "lab1": lab1, "lab2": lab2, "lab3": lab3, "bridge": bridge}[sys.argv[1]]()

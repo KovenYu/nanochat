@@ -74,5 +74,16 @@ Lab 2 milestone 的基础设施由 CC 直接实现，不作为挑战。
 | 3 | DPO / KTO（offline RL 本体） | frozen reference 双前向的计算图；per-token logp 的 gather 维度；β 增减对 implicit reward margin 的影响方向 | ① 由你设计合成 preference 数据，Koven spec 出 DPO loss 的实现要点，β 扫描曲线符合预测；② DPO→KTO 改造（去配对，逐样本 good/bad 标签），合成数据上 good↑ bad↓；capstone：从一条模拟 Coda schema 的合成 trajectory 构造 chosen/rejected 对与 KTO 标签。policy 初始化用 lab 2 产出的 SFT checkpoint（这是 post-training pipeline 自身的拓扑 base → SFT → preference：DPO/KTO 的 policy 初始化与 frozen reference 常规上就是 SFT 模型，亲身走一遍拓扑本身是课程内容，故 Lab 2 是硬前置。fallback：若 Lab 2 的 milestone 产物因故不可用，退用冻结的 speedrun chatsft 副本 `chatsft_checkpoints/d24-baseline-26413dc/`（同为 d24 SFT 模型）作初始化，默认仍走硬顺序） |
 | 5 | GRPO（online RLVR；参照 scripts/chat_rl.py，2026-09-22 解禁） | rollout batch 的 shape（num_samples × (prompt+gen)）与 mask 为 0 的位置（prompt + tool tokens）；advantage = r − mean 在全对/全错 group 上退化为 0（该 example 零梯度）；token-level 归一化下长短 sample 对 loss 的权重差；generation 与 training 阶段的显存构成 | ① 把 lab3 的 frozen reference 接回来：加 KL-to-reference 项，accept test 证明 drift 随 KL 系数受控而 reward 不塌；② Coda verifier 作 verifiable reward：对 lab2 的合成 trajectory schema 写 reward 函数（verdict → 标量），合成任务上 reward↑；capstone：同一 prompt 采多样本、group advantage、一次 optimizer step 的完整 GRPO 步（无 engine，mini 自带最简 sampler）。Stage 1 = lab3 收尾的 lab3_dpo.py vs chat_rl.py 对照阅读（两仪式合一）。policy 初始化沿用 lab3 的 sft50。蒸馏 caveat：参照的 Engine 被蒸馏规则砍掉，mini 需自带一个最简 generate（无 KV cache 或 lab1 ③ 的 greedy 版扩成 sampling），语义对齐 engine.generate_batch 的 mask 约定。Stage 3 挑战为 CC 初稿，Lab 5 开始前与 Koven 确认 |
 
+## 桥接练习：Qwen3-0.6B（2026-09-22 启动，Phase 1 前唯一待办）
+- 目的：Phase 1 训 Qwen3 系；把该家族最小成员按 lab1 的写法写成 mini，让与 nanochat 的每处架构差异
+  在一个 diff 里可见。参照物换为 HF transformers 5.8.0 的 `modeling_qwen3.py`（Phase A env）。
+- 文件：`labs/mini/bridge_qwen3.py`（mini + safetensors 载入 + LLaMA-Factory 语义的 render_chat），
+  `labs/bridge/predictions.md`（Stage 2），`labs/bridge/accept_test.py`（与 HF logits 对齐、
+  与 LLaMA-Factory qwen3 template 的 ids/mask 逐 token 对齐）。运行环境：`source /svl/u/koven/sft-phase-a/env.sh`。
+- 流程压缩：Stage 1 读 mini → Stage 2 预测（A 张量、B 机制、C 模板与 mask、D 量级）→ harness →
+  收尾 diff 仪式 = `bridge_qwen3.py` vs `lab1_gpt.py`。Stage 3 不设挑战（载入对齐由 CC 直接实现，
+  accept_test 即验收）。
+- 权重：`/svl/u/koven/sft-phase-a/hf_cache/hub/models--Qwen--Qwen3-0.6B/`（只读）。
+
 ## Parked（不删除，等触发）
 - Lab 6 ZeRO/并行：解禁条件 = 大模型（235B 级）run 前一周。
