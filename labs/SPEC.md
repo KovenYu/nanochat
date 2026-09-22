@@ -2,7 +2,9 @@
 
 ## 目标
 通过 5 个活跃 lab 建立 post-training（SFT + offline preference optimization + online RLVR）
-的 mental model。（2026-09-22：Koven 决定 SFT 之后直接进 RLVR，Lab 5 解禁。）
+的 mental model。（2026-09-22：Koven 决定 SFT 之后直接进 RLVR，Lab 5 解禁但 on hold——不阻塞 Phase 1，
+在 Phase 1 SFT 实验的等待期进行；lab3 的收尾 diff 并入 Lab 5 Stage 1。
+Phase 1 前唯一待办：Lab 1 推迟的 Qwen3-0.6B 桥接练习。）
 Exit criterion：随机指参照实现中一行训练相关代码，Koven 能说出该行处理的 tensor 的
 shape/dtype 与该行存在的理由。
 
