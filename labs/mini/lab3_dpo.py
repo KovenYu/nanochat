@@ -70,23 +70,18 @@ def render_pair(tok, prompt_conv, response_text):
     conv = {"messages": prompt_conv["messages"] + [{"role": "assistant", "content": response_text}]}
     return tok.render_conversation(conv)            # (list[int], list[int]) same length
 
-def batch_pairs(tok, pairs, device):
-    """pairs: list of (prompt_conv, chosen_text, rejected_text), length B.
-    Returns inputs (2B, T) int64, targets (2B, T) int64 with -1 outside response tokens.
-    Row layout: [chosen_0..chosen_{B-1}, rejected_0..rejected_{B-1}] — one tensor,
-    so policy and reference each run ONE forward for the whole batch ("双前向" total).
+def pad_rendered(tok, rendered, device):
+    """rendered: list of (ids, mask) from render_pair, length N.
+    Returns inputs (N, T) int64, targets (N, T) int64 with -1 outside counted tokens.
+    The ONE padding rule for every preference batch (DPO pairs, KTO samples).
+
+    Pad to this batch's longest rendering. Unlike lab2's SFT, T is NOT a fixed
+    constant here: T = L-1 varies per batch (fine without torch.compile; rotary
+    cache covers 10x sequence_len). No packing: DPO/KTO measure per-sequence logps
+    and nanochat-style packing has no block-diagonal mask, so row-mates would
+    contaminate the measured margins (training tolerates that noise; measurement
+    doesn't). The principled packed form is flash-attn varlen (cu_seqlens).
     """
-    rendered = []
-    for conv, chosen, rejected in pairs:
-        rendered.append(render_pair(tok, conv, chosen))
-    for conv, chosen, rejected in pairs:
-        rendered.append(render_pair(tok, conv, rejected))
-    # Pad to this batch's longest rendering. Unlike lab2's SFT, T is NOT a fixed
-    # constant here: T = L-1 varies per batch (fine without torch.compile; rotary
-    # cache covers 10x sequence_len). No packing: DPO measures per-sequence logps
-    # and nanochat-style packing has no block-diagonal mask, so row-mates would
-    # contaminate the measured margins (training tolerates that noise; measurement
-    # doesn't). The principled packed form is flash-attn varlen (cu_seqlens).
     L = max(len(ids) for ids, _ in rendered)
     bos = tok.get_bos_token_id()
     rows, masks = [], []
@@ -94,12 +89,22 @@ def batch_pairs(tok, pairs, device):
         pad = L - len(ids)
         rows.append(ids + [bos] * pad)              # value irrelevant: masked out below
         masks.append(mask + [0] * pad)
-    batch = torch.tensor(rows, dtype=torch.long)                          # (2B, L)
-    inputs = batch[:, :-1].to(device)                                     # (2B, T) T=L-1
-    targets = batch[:, 1:].clone().to(device)                             # (2B, T)
-    mask_t = torch.tensor(masks, dtype=torch.int8)[:, 1:].to(device)      # (2B, T) shifted
+    batch = torch.tensor(rows, dtype=torch.long)                          # (N, L)
+    inputs = batch[:, :-1].to(device)                                     # (N, T) T=L-1
+    targets = batch[:, 1:].clone().to(device)                             # (N, T)
+    mask_t = torch.tensor(masks, dtype=torch.int8)[:, 1:].to(device)      # (N, T) shifted
     targets[mask_t == 0] = -1                                             # only response tokens count
     return inputs, targets
+
+def batch_pairs(tok, pairs, device):
+    """pairs: list of (prompt_conv, chosen_text, rejected_text), length B.
+    Returns inputs (2B, T), targets (2B, T) via pad_rendered.
+    Row layout: [chosen_0..chosen_{B-1}, rejected_0..rejected_{B-1}] — one tensor,
+    so policy and reference each run ONE forward for the whole batch ("双前向" total).
+    """
+    rendered = ([render_pair(tok, conv, chosen) for conv, chosen, _ in pairs] +
+                [render_pair(tok, conv, rejected) for conv, _, rejected in pairs])
+    return pad_rendered(tok, rendered, device)                            # (2B, T) each
 
 def sequence_logprob(model, inputs, targets):
     """Sum of per-token log-probs over the counted (non -1) positions.

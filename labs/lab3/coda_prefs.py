@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lab2"))
 import torch
 from coda_views import TRAJ
-from lab3_dpo import render_pair, sequence_logprob
+from lab3_dpo import render_pair, pad_rendered
 
 def _intent_conv(traj):
     return {"messages": [{"role": "user", "content": traj["intent"] + "\n" + traj["constraints"]}]}
@@ -62,29 +62,13 @@ def kto_batch(samples, tok, channel, view, device):
     """Filter one channel+view -> (inputs, targets, labels). Unpaired by construction."""
     keep = [s for s in samples if s["view"] == view and s[channel] is not None]
     rendered = [render_pair(tok, s["conv"], s["response"]) for s in keep]
-    L = max(len(ids) for ids, _ in rendered)
-    bos = tok.get_bos_token_id()
-    rows = [ids + [bos] * (L - len(ids)) for ids, _ in rendered]
-    masks = [m + [0] * (L - len(m)) for _, m in rendered]
-    batch = torch.tensor(rows, dtype=torch.long)
-    inputs = batch[:, :-1].to(device)
-    targets = batch[:, 1:].clone().to(device)
-    mask_t = torch.tensor(masks, dtype=torch.int8)[:, 1:].to(device)
-    targets[mask_t == 0] = -1
+    inputs, targets = pad_rendered(tok, rendered, device)                 # (N, T) each
     labels = torch.tensor([s[channel] for s in keep], dtype=torch.bool, device=device)
     return inputs, targets, labels
 
 def dpo_batch(pairs, tok, device):
-    """Per-side contexts (cross-outer pairs have different convs per side)."""
+    """Per-side contexts (cross-outer pairs have different convs per side);
+    same row layout as batch_pairs: chosen rows then rejected rows."""
     rendered = ([render_pair(tok, c, t) for c, t, _, _, _ in pairs] +
                 [render_pair(tok, cr, tr) for _, _, cr, tr, _ in pairs])
-    L = max(len(ids) for ids, _ in rendered)
-    bos = tok.get_bos_token_id()
-    rows = [ids + [bos] * (L - len(ids)) for ids, _ in rendered]
-    masks = [m + [0] * (L - len(m)) for _, m in rendered]
-    batch = torch.tensor(rows, dtype=torch.long)
-    inputs = batch[:, :-1].to(device)
-    targets = batch[:, 1:].clone().to(device)
-    mask_t = torch.tensor(masks, dtype=torch.int8)[:, 1:].to(device)
-    targets[mask_t == 0] = -1
-    return inputs, targets
+    return pad_rendered(tok, rendered, device)                            # (2B, T) each
