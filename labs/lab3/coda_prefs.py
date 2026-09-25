@@ -1,4 +1,4 @@
-"""Capstone: synthetic Coda trajectory -> DPO pairs + dual-channel KTO samples.
+"""Capstone: synthetic Roven trajectory -> DPO pairs + dual-channel KTO samples.
 
 Koven's decisions (2026-09-21):
   DPO   = shared-context fork pairs (v2 vs v2b at the turn fork) + cross-outer pairs

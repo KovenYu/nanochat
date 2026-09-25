@@ -1,4 +1,4 @@
-"""Challenge (2): synthetic Coda trajectory -> View A / View B SFT exports.
+"""Challenge (2): synthetic Roven trajectory -> View A / View B SFT exports.
 
 Mapping decisions (Koven, 2026-09-18):
   1. View A discards the inner loop entirely; View B renders verifiers as TOOL calls
