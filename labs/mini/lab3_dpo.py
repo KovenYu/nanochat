@@ -36,17 +36,24 @@ from lab1_gpt import GPT, GPTConfig                          # noqa: E402
 SFT50_DIR = "/svl/u/koven/nanochat_data/labs/sft50_env/chatsft_checkpoints/d24"
 SFT50_STEP = 233
 
-def load_policy_and_ref(device):
-    """Lab-2 product (50%-budget SFT d24) -> policy (trainable) + frozen reference."""
+def load_sft50_state(device):
+    """Lab-2 product (50%-budget SFT d24): (meta, state_dict) with the compile prefix stripped."""
     with open(os.path.join(SFT50_DIR, f"meta_{SFT50_STEP:06d}.json")) as f:
         meta = json.load(f)
     sd = torch.load(os.path.join(SFT50_DIR, f"model_{SFT50_STEP:06d}.pt"),
                     map_location=device, weights_only=True)
     sd = {k.removeprefix("_orig_mod."): v for k, v in sd.items()}
-    def build(state):
-        m = GPT(GPTConfig(**meta["model_config"]))
-        m.load_state_dict(state, strict=True, assign=True)   # assign ADOPTS the tensors
-        return m.to(device)
+    return meta, sd
+
+def build_gpt(meta, state, device):
+    m = GPT(GPTConfig(**meta["model_config"]))
+    m.load_state_dict(state, strict=True, assign=True)   # assign ADOPTS the tensors
+    return m.to(device)
+
+def load_policy_and_ref(device):
+    """policy (trainable) + frozen reference, both from sft50. Shared with lab5 (KL flag)."""
+    meta, sd = load_sft50_state(device)
+    build = lambda state: build_gpt(meta, state, device)
     policy = build(sd)
     ref = build({k: v.clone() for k, v in sd.items()})  # ref gets its OWN storage: assign
                                                         # with a shared sd would alias the
