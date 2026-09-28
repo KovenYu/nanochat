@@ -448,6 +448,120 @@ def bridge():
     print("D4 8B full-param on 4xH200 (564 GB): yes with the states sharded (ZeRO-2/3); LoRA trivially")
 
 
+def lab5():
+    """Rows of labs/lab5/predictions.md. Measures on sft50 with GRPOConfig(kl_beta=0.1)."""
+    import math, time
+    import torch
+    import torch.nn.functional as F
+    from lab0_tokenizer import get_tokenizer
+    from lab2_sft import setup_optimizer
+    from lab5_grpo import (GRPOConfig, ArithmeticTask, load_policy_and_maybe_ref, rollout_example,
+                           grpo_microbatch_loss, train)
+
+    assert torch.cuda.is_available(), "lab5 harness needs the GPU (d24 sampling)"
+    dev = "cuda"
+    tok = get_tokenizer()
+    cfg = GRPOConfig(kl_beta=0.1)
+    torch.cuda.empty_cache(); torch.cuda.reset_peak_memory_stats()
+    m0 = torch.cuda.memory_allocated()
+    policy, ref = load_policy_and_maybe_ref(cfg, dev)
+    m_models = torch.cuda.memory_allocated() - m0
+    n_params = sum(p.numel() for p in policy.parameters())
+    dtypes = {str(p.dtype) for p in policy.parameters()}
+    print("== D. models ==")
+    print(f"D3 params {n_params/1e9:.3f} B, param dtypes {dtypes}; policy+ref resident {m_models/2**30:.2f} GiB (per model {m_models/2/2**30:.2f} GiB)")
+
+    task = ArithmeticTask(64, seed=0)
+    conv = task[0]
+    tokens = tok.render_for_completion(conv)
+    P = len(tokens)
+    print("== A. rollout ==")
+    print(f"A1 prompt {conv['messages'][0]['content']!r}: P = {P} tokens:", [tok.decode([t]) for t in tokens])
+    torch.cuda.synchronize(); torch.cuda.reset_peak_memory_stats(); m_before = torch.cuda.memory_allocated()
+    t0 = time.time()
+    seqs, inputs, targets, rewards, adv = rollout_example(policy, tok, task, 0, 0, cfg, dev)
+    torch.cuda.synchronize(); t_roll = time.time() - t0
+    peak_sample = torch.cuda.max_memory_allocated() - m_before
+    S, T = inputs.shape
+    g = [len(s) - P for s in seqs]
+    print(f"A2 inputs shape {(S, T)}, dtype {inputs.dtype}; P={P}, max_new_tokens={cfg.max_new_tokens}; T - P = {T - P}")
+    neg = (targets == -1).sum(dim=-1).tolist()
+    print(f"A3 sampled tokens per row g_i = {g}; -1 count per row = {neg}; check T - g_i = {[T - x for x in g]}")
+    ae = tok.encode_special("<|assistant_end|>")
+    print(f"A4 <|assistant_end|> among targets>=0: {bool(((targets == ae) & (targets >= 0)).any())} ; rows that terminated (g<64): {sum(x < cfg.max_new_tokens for x in g)}/{S}")
+    print(f"A5 (targets>=0).sum() = {int((targets >= 0).sum())}, sum g_i = {sum(g)}")
+    print("== B. group ==")
+    p = int(rewards.sum())
+    print(f"B1 rewards: {p}/{S} correct; advantage values {sorted(set(adv.tolist()))}; sum = {adv.sum().item():+.3e}")
+    Bd = cfg.device_batch_size
+    num_passes = S // Bd
+    num_valid = int((targets[:Bd] >= 0).sum())
+    normalizer = num_valid * num_passes * cfg.examples_per_step
+    print(f"C4 normalizer = num_valid {num_valid} x num_passes {num_passes} x examples_per_step {cfg.examples_per_step} = {normalizer}")
+    def total_grad_norm(m):
+        return math.sqrt(sum(float(p.grad.float().pow(2).sum()) for p in m.parameters() if p.grad is not None))
+    policy.zero_grad(set_to_none=True)
+    loss0, pg0, kl0 = grpo_microbatch_loss(policy, ref, inputs[:Bd], targets[:Bd], torch.zeros_like(adv[:Bd]), normalizer, cfg.kl_beta)
+    loss0.backward()
+    any_none = any(p.grad is None for p in policy.parameters())
+    print(f"B2 zero advantages: pg_obj = {pg0.item():+.3e}, total grad norm = {total_grad_norm(policy):.3e}, any grad None: {any_none} (KL term still present: kl={kl0.item():.3e})")
+    print(f"B3 k3 KL at step 0 (policy == ref) = {kl0.item():.3e}")
+    for G in (16, 4):
+        q = 0.3
+        print(f"B4 group {G}, pass@1 {q}: P(all wrong)+P(all right) = {(1-q)**G:.4f} + {q**G:.6f} = {(1-q)**G + q**G:.4f}")
+    print("== C. normalization / magnitudes ==")
+    policy.zero_grad(set_to_none=True)
+    torch.cuda.synchronize(); torch.cuda.reset_peak_memory_stats(); m_before = torch.cuda.memory_allocated()
+    t0 = time.time()
+    loss, pg, kl = grpo_microbatch_loss(policy, ref, inputs[:Bd], targets[:Bd], adv[:Bd], normalizer, cfg.kl_beta)
+    loss.backward()
+    torch.cuda.synchronize(); t_train = time.time() - t0
+    peak_train = torch.cuda.max_memory_allocated() - m_before
+    with torch.no_grad():
+        logp = -policy(inputs[:Bd], targets[:Bd], loss_reduction="none").view_as(inputs[:Bd])
+    valid = targets[:Bd] >= 0
+    print(f"C2 per-token logp of sampled tokens (training forward): mean {logp[valid].mean().item():+.3f} nats, min {logp[valid].min().item():+.2f}, max {logp[valid].max().item():+.2f}")
+    seq_lp = logp.sum(-1)
+    print(f"C3 pg_obj = {pg.item():+.4e} (loss {loss.item():+.4e}); per-row A_i: {[f'{a:+.2f}' for a in adv[:Bd].tolist()]}; per-row seq logp: {[f'{v:.1f}' for v in seq_lp.tolist()]}; cov(A, seqlogp)-like sum = {(adv[:Bd] * seq_lp).sum().item():+.2f}")
+    order = sorted(range(Bd), key=lambda i: g[i])
+    i_s, i_l = order[0], order[-1]
+    print(f"C1 shortest row g={g[i_s]} vs longest g={g[i_l]}: token-level contribution ratio (tokens x |A|) = {g[i_l]*abs(adv[i_l].item()):.2f} : {g[i_s]*abs(adv[i_s].item()):.2f} ; sequence-level would be |A| : |A| = {abs(adv[i_l].item()):.2f} : {abs(adv[i_s].item()):.2f}")
+    print("== D. sampler vs trainer ==")
+    with torch.no_grad():
+        logits = policy(inputs[:Bd])                                   # (Bd, T, V) fp32
+        full = F.log_softmax(logits / cfg.temperature, dim=-1)
+        v, _ = torch.topk(logits, cfg.top_k)
+        trunc = logits.masked_fill(logits < v[..., [-1]], -float("inf"))
+        topk_lp = F.log_softmax(trunc / cfg.temperature, dim=-1)
+        safe = targets[:Bd].clamp_min(0).unsqueeze(-1)
+        lp_full = full.gather(-1, safe).squeeze(-1)[valid]
+        lp_topk = topk_lp.gather(-1, safe).squeeze(-1)[valid]
+        diff = lp_topk - lp_full
+        print(f"D1 sampling-time logp (top-{cfg.top_k}) minus training logp (full vocab): mean {diff.mean().item():+.4f} nats/token, max {diff.max().item():+.4f}, min {diff.min().item():+.2e}; frac tokens with diff>1e-3: {(diff > 1e-3).float().mean().item():.2f}")
+        print(f"D2 top_k off: sampler softmax == training log_softmax on the same forward: max |diff| = {(full.gather(-1, safe).squeeze(-1)[valid] - logp[valid]).abs().max().item():.2e}")
+    print(f"D4 peaks above resident: sampling (8 rows, no_grad) {peak_sample/2**30:.2f} GiB; training micro-batch fwd+bwd (with ref fwd) {peak_train/2**30:.2f} GiB")
+    opt = setup_optimizer(policy)
+    m_before = torch.cuda.memory_allocated()
+    opt.step(); torch.cuda.synchronize()
+    print(f"D4 optimizer state after first step: +{(torch.cuda.memory_allocated() - m_before)/2**30:.2f} GiB (weights {m_models/2/2**30:.2f} GiB)")
+    policy.zero_grad(set_to_none=True)
+    print(f"D5 time: rollout 16 samples x {cfg.max_new_tokens} tokens (2 passes, no KV cache) {t_roll:.2f} s; one micro-batch fwd+bwd {t_train:.3f} s -> x{num_passes*cfg.examples_per_step} per step = {t_train*num_passes*cfg.examples_per_step:.2f} s; ratio sampling/training per step ~ {t_roll*cfg.examples_per_step/(t_train*num_passes*cfg.examples_per_step):.1f}x")
+    print("== E. dynamics (30 steps, reward = correct integer ANYWHERE in the answer) ==")
+    class AnywhereTask(ArithmeticTask):
+        def reward(self, conversation, assistant_response):
+            gold = str(self.gold(conversation))
+            return float(gold in __import__("re").findall(r"-?\d+", assistant_response))
+    # fresh policy (the optimizer step above moved it slightly): reload
+    del opt
+    policy, _ = load_policy_and_maybe_ref(GRPOConfig(), dev)
+    hist = train(policy, None, tok, AnywhereTask(64, seed=0), GRPOConfig(), 30, dev, log=lambda s: None)
+    r5 = lambda h: sum(x["reward"] for x in h) / len(h)
+    l5 = lambda h: sum(x["seq_len"] for x in h) / len(h)
+    print(f"E1 anywhere-reward: reward first5 {r5(hist[:5]):.2f} -> last5 {r5(hist[-5:]):.2f}; seq_len first5 {l5(hist[:5]):.1f} -> last5 {l5(hist[-5:]):.1f} (last-integer reward run: 0.13 -> 0.48, 68 -> 36)")
+    import statistics
+    print(f"E2 step-to-step std of mean reward (32 samples/step): measured over the 30 steps {statistics.pstdev([x['reward'] for x in hist]):.3f}; binomial sqrt(p(1-p)/32) at p=0.3 = {math.sqrt(0.3*0.7/32):.3f}")
+
+
 if __name__ == "__main__":
-    assert len(sys.argv) == 2 and sys.argv[1] in ("lab0", "lab1", "lab2", "lab3", "bridge"), "usage: trace_harness.py lab0|lab1|lab2|lab3|bridge"
-    {"lab0": lab0, "lab1": lab1, "lab2": lab2, "lab3": lab3, "bridge": bridge}[sys.argv[1]]()
+    assert len(sys.argv) == 2 and sys.argv[1] in ("lab0", "lab1", "lab2", "lab3", "lab5", "bridge"), "usage: trace_harness.py lab0|lab1|lab2|lab3|lab5|bridge"
+    {"lab0": lab0, "lab1": lab1, "lab2": lab2, "lab3": lab3, "lab5": lab5, "bridge": bridge}[sys.argv[1]]()
