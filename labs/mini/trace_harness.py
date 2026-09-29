@@ -527,18 +527,33 @@ def lab5():
     i_s, i_l = order[0], order[-1]
     print(f"C1 shortest row g={g[i_s]} vs longest g={g[i_l]}: token-level contribution ratio (tokens x |A|) = {g[i_l]*abs(adv[i_l].item()):.2f} : {g[i_s]*abs(adv[i_s].item()):.2f} ; sequence-level would be |A| : |A| = {abs(adv[i_l].item()):.2f} : {abs(adv[i_s].item()):.2f}")
     print("== D. sampler vs trainer ==")
+    # Replay the SAMPLER's path: at generation step t it forwarded the prefix ids[:, :P+t]
+    # (length P+t, no KV cache) and read the last position. The trainer forwards the whole
+    # padded row (length T) once. Causally identical; numerically, different T.
+    ids_full = torch.cat([inputs[:Bd], targets[:Bd].clamp_min(0)[:, -1:]], dim=1)   # (Bd, T+1) ~ ids
+    ids_full[:, 1:][targets[:Bd] >= 0] = targets[:Bd][targets[:Bd] >= 0]            # exact sampled ids
+    lp_samp_full, lp_samp_topk, lp_train = [], [], []
     with torch.no_grad():
-        logits = policy(inputs[:Bd])                                   # (Bd, T, V) fp32
-        full = F.log_softmax(logits / cfg.temperature, dim=-1)
-        v, _ = torch.topk(logits, cfg.top_k)
-        trunc = logits.masked_fill(logits < v[..., [-1]], -float("inf"))
-        topk_lp = F.log_softmax(trunc / cfg.temperature, dim=-1)
-        safe = targets[:Bd].clamp_min(0).unsqueeze(-1)
-        lp_full = full.gather(-1, safe).squeeze(-1)[valid]
-        lp_topk = topk_lp.gather(-1, safe).squeeze(-1)[valid]
-        diff = lp_topk - lp_full
-        print(f"D1 sampling-time logp (top-{cfg.top_k}) minus training logp (full vocab): mean {diff.mean().item():+.4f} nats/token, max {diff.max().item():+.4f}, min {diff.min().item():+.2e}; frac tokens with diff>1e-3: {(diff > 1e-3).float().mean().item():.2f}")
-        print(f"D2 top_k off: sampler softmax == training log_softmax on the same forward: max |diff| = {(full.gather(-1, safe).squeeze(-1)[valid] - logp[valid]).abs().max().item():.2e}")
+        for t in range(T - P + 1):
+            pos = P - 1 + t                                            # target index of the t-th sampled token
+            rows = (targets[:Bd, pos] >= 0) if pos < T else torch.zeros(Bd, dtype=torch.bool, device=dev)
+            if not rows.any():
+                continue
+            prefix = ids_full[:, :P + t]                               # (Bd, P+t), what the sampler saw
+            if prefix.size(1) < 2:
+                continue
+            lg = policy(prefix)[:, -1, :]                              # (Bd, V) fp32
+            tok_t = targets[:Bd, pos].clamp_min(0)
+            full_t = F.log_softmax(lg / cfg.temperature, dim=-1).gather(-1, tok_t[:, None])[:, 0]
+            v, _ = torch.topk(lg, cfg.top_k)
+            trunc = lg.masked_fill(lg < v[:, [-1]], -float("inf"))
+            topk_t = F.log_softmax(trunc / cfg.temperature, dim=-1).gather(-1, tok_t[:, None])[:, 0]
+            lp_samp_full.append(full_t[rows]); lp_samp_topk.append(topk_t[rows]); lp_train.append(logp[:, pos][rows])
+    lp_samp_full, lp_samp_topk, lp_train = map(torch.cat, (lp_samp_full, lp_samp_topk, lp_train))
+    diff = lp_samp_topk - lp_train
+    print(f"D1 sampler logp (top-{cfg.top_k}, prefix forward) minus trainer logp (full vocab, full-row forward): mean {diff.mean().item():+.4f} nats/token, max {diff.max().item():+.4f}, min {diff.min().item():+.2e}; frac tokens with diff>1e-3: {(diff > 1e-3).float().mean().item():.2f}; over {diff.numel()} tokens")
+    d2 = (lp_samp_full - lp_train).abs()
+    print(f"D2 top_k off: sampler (prefix forward) vs trainer (full-row forward) logp: max |diff| {d2.max().item():.2e}, mean {d2.mean().item():.2e}, exact-equal fraction {(d2 == 0).float().mean().item():.2f}")
     print(f"D4 peaks above resident: sampling (8 rows, no_grad) {peak_sample/2**30:.2f} GiB; training micro-batch fwd+bwd (with ref fwd) {peak_train/2**30:.2f} GiB")
     opt = setup_optimizer(policy)
     m_before = torch.cuda.memory_allocated()
