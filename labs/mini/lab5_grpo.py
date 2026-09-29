@@ -38,6 +38,11 @@ Distillation decisions (each deliberate; SPEC "蒸馏规则"):
   5. model.eval()/model.train() toggles are kept where the reference has them (L100,
      L252). On this GPT they change nothing (no dropout anywhere; see Stage 1 Q1c).
 
+Stage 3 (3), Koven 2026-09-29: --train-eos keeps <|assistant_end|> in the row with mask 1
+so the stop decision gets gradient. Decisions: <|bos|> still ends the row and is NOT kept
+(no gradient either way); rows cut at max_new_tokens are untouched (no overlong penalty);
+default False == reference behaviour. The reward always sees the text WITHOUT the EOS.
+
 Policy init = lab3's sft50 (d24, step 233). Optimizer = lab2's setup_optimizer
 (Muon + AdamW, the reference's model.setup_optimizer), lr scaled by init_lr_frac and
 ramped linearly to zero, exactly chat_rl.py:206-213.
@@ -67,6 +72,7 @@ class GRPOConfig:                                            # chat_rl.py:34-60 
     top_k: int = 50
     init_lr_frac: float = 0.05     # lr = base lr * this, then linear rampdown to 0
     kl_beta: float = 0.0           # 0.0 == reference (no ref model loaded at all)
+    train_eos: bool = False        # False == reference (terminal token dropped from the row)
 
     def __post_init__(self):
         assert self.num_samples % self.device_batch_size == 0, "samples must split into whole passes"
@@ -115,10 +121,12 @@ class ArithmeticTask:
 # Sampler with Engine.generate_batch's contract (nanochat/engine.py:277-299)
 
 @torch.no_grad()
-def generate_batch(model, tok, tokens, num_samples, max_tokens, temperature, top_k, seed):
+def generate_batch(model, tok, tokens, num_samples, max_tokens, temperature, top_k, seed, train_eos=False):
     """tokens: prompt ids (list[int], ends with <|assistant_start|>), length P.
-    Returns (results, masks): num_samples lists each; results[i] = prompt + sampled tokens
-    (terminal token excluded), masks[i] = [0]*P + [1]*len(sampled). Rows differ in length.
+    Returns (results, masks): num_samples lists each; results[i] = prompt + sampled tokens,
+    masks[i] = [0]*P + [1]*len(sampled). Rows differ in length. Terminal tokens:
+    train_eos=False (reference): neither <|assistant_end|> nor <|bos|> is kept.
+    train_eos=True: <|assistant_end|> is kept with mask 1; <|bos|> is still not kept.
     No KV cache: step t re-forwards all (S, P+t) ids and reads the last position."""
     assistant_end = tok.encode_special("<|assistant_end|>")
     bos = tok.get_bos_token_id()
@@ -142,7 +150,11 @@ def generate_batch(model, tok, tokens, num_samples, max_tokens, temperature, top
         for i, t in enumerate(next_ids[:, 0].tolist()):
             if completed[i]:
                 continue                                      # row keeps sampling; output ignored
-            if t == assistant_end or t == bos:
+            if t == assistant_end and train_eos:
+                results[i].append(t)
+                masks[i].append(1)                            # stop decision: trained on
+                completed[i] = True
+            elif t == assistant_end or t == bos:
                 completed[i] = True                           # terminal token NOT kept
             else:
                 results[i].append(t)
@@ -171,12 +183,17 @@ def rollout_example(policy, tok, task, example_idx, step, cfg, device):
     for sampling_step in range(cfg.num_samples // cfg.device_batch_size):
         seed = hash((step, example_idx, sampling_step)) & 0x7FFFFFFF   # L106: distinct per pass
         seqs_b, masks_b = generate_batch(policy, tok, tokens, cfg.device_batch_size,
-                                         cfg.max_new_tokens, cfg.temperature, cfg.top_k, seed)
+                                         cfg.max_new_tokens, cfg.temperature, cfg.top_k, seed,
+                                         train_eos=cfg.train_eos)
         sequences.extend(seqs_b)
         masks.extend(masks_b)
-    rewards = [task.reward(conversation, tok.decode(seq[prefix_length:])) for seq in sequences]
+    assistant_end = tok.encode_special("<|assistant_end|>")    # pad value (mask 0) and, with
+                                                               # train_eos, the kept EOS (mask 1)
+    def response_ids(seq):                                     # what the verifier sees: no EOS
+        gen = seq[prefix_length:]
+        return gen[:-1] if gen and gen[-1] == assistant_end else gen
+    rewards = [task.reward(conversation, tok.decode(response_ids(seq))) for seq in sequences]
 
-    assistant_end = tok.encode_special("<|assistant_end|>")    # pad value; never in the loss
     max_length = max(len(seq) for seq in sequences)
     ids = torch.tensor([seq + [assistant_end] * (max_length - len(seq)) for seq in sequences],
                        dtype=torch.long, device=device)        # (S, L)
@@ -216,7 +233,8 @@ def grpo_microbatch_loss(policy, ref, inputs, targets, advantages, normalizer, k
 def grpo_step(policy, ref, tok, task, example_indices, step, cfg, device):
     """Gradient accumulation for one optimizer step (chat_rl.py:248-277); the caller owns
     optimizer.step() / zero_grad / lr. Returns per-step stats (python floats)."""
-    rewards_all, lengths_all, pg_all, kl_all = [], [], [], []
+    rewards_all, lengths_all, pg_all, kl_all, truncated_all = [], [], [], [], []
+    assistant_end = tok.encode_special("<|assistant_end|>")
     for example_idx in example_indices:
         sequences, inputs, targets, rewards, advantages = rollout_example(
             policy, tok, task, example_idx, step, cfg, device)
@@ -233,8 +251,12 @@ def grpo_step(policy, ref, tok, task, example_indices, step, cfg, device):
             pg_all.append(pg_obj.item()); kl_all.append(kl.item())
         rewards_all.append(rewards.mean().item())
         lengths_all.extend(len(seq) for seq in sequences)
+        P = len(tok.render_for_completion(task[example_idx]))
+        truncated_all.extend(len(seq) - P == cfg.max_new_tokens and seq[-1] != assistant_end
+                             for seq in sequences)             # hit the cap without stopping
     return {"reward": sum(rewards_all) / len(rewards_all),
             "seq_len": sum(lengths_all) / len(lengths_all),
+            "truncated": sum(truncated_all) / len(truncated_all),
             "pg_obj": sum(pg_all), "kl": sum(kl_all)}
 
 
@@ -273,7 +295,7 @@ def train(policy, ref, tok, task, cfg, num_steps, device, log=print):
         policy.zero_grad(set_to_none=True)
         history.append(stats)
         log(f"step {step}/{num_steps} | reward {stats['reward']:.3f} | seq_len {stats['seq_len']:.1f} "
-            f"| pg_obj {stats['pg_obj']:+.4f} | kl {stats['kl']:.5f} | lrm {lrm:.3f}")
+            f"| truncated {stats['truncated']:.2f} | pg_obj {stats['pg_obj']:+.4f} | kl {stats['kl']:.5f} | lrm {lrm:.3f}")
     return history
 
 
@@ -282,11 +304,12 @@ def main():
     ap.add_argument("--steps", type=int, default=20)
     ap.add_argument("--examples", type=int, default=64, help="ArithmeticTask size")
     ap.add_argument("--kl-beta", type=float, default=0.0)
+    ap.add_argument("--train-eos", action="store_true", help="keep <|assistant_end|> in the row, mask 1")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
     device = "cuda"
     torch.manual_seed(args.seed)
-    cfg = GRPOConfig(kl_beta=args.kl_beta)
+    cfg = GRPOConfig(kl_beta=args.kl_beta, train_eos=args.train_eos)
     tok = get_tokenizer()
     task = ArithmeticTask(args.examples, seed=args.seed)
     policy, ref = load_policy_and_maybe_ref(cfg, device)
