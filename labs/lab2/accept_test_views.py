@@ -15,7 +15,7 @@ import torch                                     # noqa: E402
 from lab0_tokenizer import get_tokenizer         # noqa: E402
 from lab1_gpt import GPT, GPTConfig              # noqa: E402
 from lab2_sft import sft_data_generator          # noqa: E402
-from coda_views import TRAJ, export_view_a, export_view_b  # noqa: E402
+from orrery_views import TRAJ, export_view_a, export_view_b  # noqa: E402
 
 V1, V2, V2B = (TRAJ["outer"][0]["attempts"][0]["code"],
                TRAJ["outer"][1]["attempts"][0]["code"],

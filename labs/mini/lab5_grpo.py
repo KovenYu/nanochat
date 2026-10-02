@@ -33,7 +33,7 @@ Distillation decisions (each deliberate; SPEC "蒸馏规则"):
      render_for_completion pops), the reward parses the SAMPLED text and compares.
      GSM8K's "#### <number>" marker and calculator parts are dataset format, not
      mechanism, and sft50 never saw them; the mini compares the last integer instead.
-     Stage 3 (2) adds RovenTask: reward from the lab2 synthetic verifier schema.
+     Stage 3 (2) adds OrreryTask: reward from the lab2 synthetic verifier schema.
   4. No wandb, no checkpoint, no pass@k eval loop; accept tests measure reward directly.
   5. model.eval()/model.train() toggles are kept where the reference has them (L100,
      L252). On this GPT they change nothing (no dropout anywhere; see Stage 1 Q1c).

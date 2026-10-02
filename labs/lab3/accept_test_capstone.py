@@ -15,8 +15,8 @@ sys.path.insert(0, "labs/mini"); sys.path.insert(0, "labs/lab3"); sys.path.inser
 import torch
 from lab0_tokenizer import get_tokenizer
 from lab3_dpo import load_policy_and_ref, sequence_logprob, dpo_loss, kto_loss
-from coda_views import TRAJ
-from coda_prefs import dpo_pairs, kto_samples, kto_batch, dpo_batch
+from orrery_views import TRAJ
+from orrery_prefs import dpo_pairs, kto_samples, kto_batch, dpo_batch
 
 def main():
     tok = get_tokenizer()

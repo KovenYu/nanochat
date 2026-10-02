@@ -1,4 +1,4 @@
-"""Capstone: synthetic Roven trajectory -> DPO pairs + dual-channel KTO samples.
+"""Capstone: synthetic Orrery trajectory -> DPO pairs + dual-channel KTO samples.
 
 Koven's decisions (2026-09-21):
   DPO   = shared-context fork pairs (v2 vs v2b at the turn fork) + cross-outer pairs
@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "mini"))
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lab2"))
 import torch
-from coda_views import TRAJ
+from orrery_views import TRAJ
 from lab3_dpo import render_pair, pad_rendered
 
 def _intent_conv(traj):
