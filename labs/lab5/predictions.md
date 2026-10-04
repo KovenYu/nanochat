@@ -38,15 +38,15 @@ step=0 的一次 rollout + 第 0 个 micro-batch（8 行）的一次 forward/bac
 
 | # | 问题 | 你的预测 |
 |---|---|---|
-| D1 ✏ | 同一批采样 token：采样时的 logp（softmax 只在 top-50 内归一化）与训练 forward 的 logp（全 32768 词表）—— 哪个大？差多少 nats/token（量级）？这对 "on policy 所以 ratio 恒为 1" 意味着什么 | 训练的logp大。按照上面的估算，假设1/3的token在做选择，不算top50的话每次选项可能稍微多一点，比如变成3个，那这里就变成1/3*ln3=0.36左右，所以量级上就是只差0.1~0.2. 这意味着”on policy 所以ratio 恒为1“在实践中并不正确，有一些偏差。|
-| D2 | top_k 关掉（=0）后重算 D1，差值是精确 0 还是 1e-x？（2026-09-28 更正题面：采样时第 t 步 forward 的是长度 P+t 的前缀，训练 forward 的是整行长度 T；causal 下数学上相同，但不是同一次计算） | 直觉上是1e-x吧，因为计算涉及到的p很小，总会有rounding error|
-| D3 ✏ | sft50 参数量（按 config 算：n_embd 1536, n_layer 24, vocab 32768, 无 GQA）与权重 GiB；kl_beta>0 时 policy+ref 常驻 GiB（2026-09-28 更正题面：权重不是全 bf16，见 CC 的更正说明） | 这是1.3B模型对吧，那就是ref是2.6G显存，policy本身是16倍所以是20G左右的显存。|
-| D4 | 三个峰值显存的大小顺序并估量级：(i) 采样 8 行 × ~75 token（no_grad）；(ii) 训练 micro-batch 8 行的 forward+backward；(iii) 一次 optimizer.step 后新增的 optimizer state | |
-| D5 ✏ | 一步里的时间：采 16 个 sample × 64 token（无 KV cache，两趟）vs 两个 micro-batch 的 forward+backward。谁大、大约几倍？无 KV cache 的采样 FLOPs 随 max_new_tokens 是线性还是二次 | |
+| D1 ✏ | 同一批采样 token：采样时的 logp（softmax 只在 top-50 内归一化）与训练 forward 的 logp（全 32768 词表）—— 哪个大？差多少 nats/token（量级）？这对 "on policy 所以 ratio 恒为 1" 意味着什么 | 训练的logp大。按照上面的估算，假设1/3的token在做选择，每个做选择的token的尾部概率密度按照0.1来算，log 采样/训练=log 1.1=-log0.9, 除以3就是0.03. 这意味着”on policy 所以ratio 恒为1“在实践中并不正确，有一些偏差。|
+| D2 | top_k 关掉（=0）后重算 D1，差值是精确 0 还是 1e-x？（2026-09-28 更正题面：采样时第 t 步 forward 的是长度 P+t 的前缀，训练 forward 的是整行长度 T；causal 下数学上相同，但不是同一次计算） | 同样的计算，应该是0|
+| D3 ✏ | sft50 参数量（按 config 算：n_embd 1536, n_layer 24, vocab 32768, 无 GQA）与权重 GiB；kl_beta>0 时 policy+ref 常驻 GiB（2026-09-28 更正题面：权重不是全 bf16，见 CC 的更正说明） | 这里有adhoc的部分，就skip了|
+| D4 | 三个峰值显存的大小顺序并估量级：(i) 采样 8 行 × ~75 token（no_grad）；(ii) 训练 micro-batch 8 行的 forward+backward；(iii) 一次 optimizer.step 后新增的 optimizer state | 1. 8x75 tokens，不需要留中间变量，忽略不计，基本就是静态显存；2. 静态还是2.6G左右，动态是8x75=600 tokens, 一层大概是10份，24层就是240份，embedding 是15K, 那总共是15Kx600x240 差不多2G 左右。3. optimizer 是12倍参数量，那就是12*1.3=15G左右。所以最后总的是20G左右显存峰值。|
+| D5 ✏ | 一步里的时间：采 16 个 sample × 64 token（无 KV cache，两趟）vs 两个 micro-batch 的 forward+backward。谁大、大约几倍？无 KV cache 的采样 FLOPs 随 max_new_tokens 是线性还是二次 | 前者要forward 128次，后者forward 2次 backward 2次，肯定是前者大。假设backward的耗时是forward的2倍，那后者相当于6次forward，差了20倍。无KV cache就是每次都full forward，二次增长。|
 
 ## E. 动力学（短跑兑现）
 
 | # | 问题 | 你的预测 |
 |---|---|---|
-| E1 ✏ | 已知：reward = "最后一个整数正确" 时 30 步后平均长度 68 → 36。若改成 "回答里任何位置出现正确整数即 1"，长度会升、降、还是不动？reward 会更高还是更低？说机制 | |
-| E2 | 单步 reward 均值（32 个 sample）的 step-to-step 标准差量级，当真实 pass@1 ≈ 0.3 | |
+| E1 ✏ | 已知：reward = "最后一个整数正确" 时 30 步后平均长度 68 → 36。若改成 "回答里任何位置出现正确整数即 1"，长度会升、降、还是不动？reward 会更高还是更低？说机制 | 长度应该上升，reward 更高。这应该就是hacking 了吧，policy会变成就疯狂吐出一大堆数字。|
+| E2 | 单步 reward 均值（32 个 sample）的 step-to-step 标准差量级，当真实 pass@1 ≈ 0.3 | 单步reward均值是0.3*32=10左右，标准差应该是5附近吧我猜|
